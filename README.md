@@ -1,118 +1,130 @@
-# `template-compendium-adapter-dotnet`
+# `compendium-adapter-huggingface`
 
-Starter for a new **Compendium** adapter (.NET 9, single-vendor, lives in its own repository).
+[Hugging Face](https://huggingface.co/) AI provider adapter for the [Compendium](https://github.com/sassy-solutions/compendium) event-sourcing framework. Implements `IAIProvider` from `Compendium.Abstractions.AI` against the two main Hugging Face inference surfaces — dedicated **Inference Endpoints** (paid, managed) and the shared **Serverless Inference API** — through the OpenAI-compatible Messages API and the feature-extraction task.
 
-Aligns with [ADR 0006](../../docs/adr/0006-multi-repo-adapter-split.md) (split heavy adapters into per-adapter repositories). Encodes the [`compendium-test-author`](.claude/skills/compendium-test-author/SKILL.md) skill so `/tests` and `/coverage` work out of the box.
+Built from [`template-compendium-adapter-dotnet`](https://github.com/sassy-solutions/template-compendium-adapter-dotnet) per [ADR-0006](https://github.com/sassy-solutions/compendium/blob/main/docs/adr/0006-multi-repo-adapter-split.md) (multi-repo adapter split).
 
-## What you get
+## Install
 
-```
-.
-├── src/Compendium.Adapters.Huggingface/        — the adapter project (rename Huggingface → <Vendor>)
-│   ├── DependencyInjection/
-│   │   └── ServiceCollectionExtensions.cs
-│   ├── Options/HuggingfaceOptions.cs
-│   └── HuggingfaceAdapter.cs                   — illustrates the IAdapter (or any port) shape
-├── tests/Unit/Compendium.Adapters.Huggingface.Tests/
-│   ├── DependencyInjection/ServiceCollectionExtensionsTests.cs
-│   ├── Options/HuggingfaceOptionsTests.cs
-│   └── GlobalUsings.cs
-├── .github/workflows/ci.yml               — build + test + 90% coverage gate
-├── .claude/skills/compendium-test-author/SKILL.md
-├── .claude/commands/{tests,coverage}.md
-├── .config/dotnet-tools.json              — pins ReportGenerator
-├── Directory.Build.props
-├── Directory.Packages.props               — central package management
-├── Compendium.Adapters.Huggingface.sln
-├── global.json                            — pins .NET 9 SDK
-└── LICENSE
+```bash
+dotnet add package Compendium.Adapters.HuggingFace
 ```
 
-## Conventions enforced (copy from Compendium framework)
+## Quick start — dedicated Inference Endpoint (production)
+
+```csharp
+services.AddCompendiumHuggingFace(opt =>
+{
+    opt.Mode = HuggingFaceMode.InferenceEndpoint;
+    opt.HfToken = Environment.GetEnvironmentVariable("HF_TOKEN")!;
+    opt.EndpointUrl = "https://<your-endpoint>.endpoints.huggingface.cloud";
+});
+
+var ai = sp.GetRequiredService<IAIProvider>();
+var result = await ai.CompleteAsync(new CompletionRequest
+{
+    Model = string.Empty, // endpoint is bound to one model at deploy time
+    Messages = new() { Message.User("What is event sourcing?") }
+});
+```
+
+## Quick start — Serverless Inference (prototyping)
+
+```csharp
+services.AddCompendiumHuggingFace(opt =>
+{
+    opt.Mode = HuggingFaceMode.ServerlessInference;
+    opt.HfToken = Environment.GetEnvironmentVariable("HF_TOKEN")!;
+    opt.DefaultChatModel = "meta-llama/Meta-Llama-3.1-8B-Instruct";
+    opt.DefaultEmbeddingModel = "sentence-transformers/all-MiniLM-L6-v2";
+});
+```
+
+## Mode comparison
+
+| Aspect | `InferenceEndpoint` | `ServerlessInference` |
+|---|---|---|
+| URL shape | `https://<name>.endpoints.huggingface.cloud` (one per endpoint) | `https://api-inference.huggingface.co/models/<id>` |
+| Cost model | Per-hour compute (CPU / GPU / accelerator) | Free tier + Pro (per-token, shared org quota) |
+| Rate limits | Your endpoint's compute capacity only | Aggressive shared limits; HTTP 429 common |
+| Cold starts | None (warm) or autoscale-to-zero opt-in (~30 s warm-up) | Frequent — first call to a model often loads it |
+| Latency | Predictable | Variable |
+| Model selection | One model per endpoint, fixed at deploy time | Any model in the Hugging Face Hub |
+| Production fit | Yes (with autoscaling, regions, EU residency) | No — prototyping / spike work only |
+
+## Options
+
+| Option | Required | Default | Notes |
+|---|---|---|---|
+| `Mode` | yes | `InferenceEndpoint` | One of `InferenceEndpoint`, `ServerlessInference` |
+| `HfToken` | yes | — | A `hf_*` user access token from <https://huggingface.co/settings/tokens> |
+| `EndpointUrl` | endpoint mode | — | Full URL of your dedicated endpoint |
+| `ServerlessBaseUrl` | serverless mode | `https://api-inference.huggingface.co/models` | Override if HF moves the API |
+| `DefaultChatModel` | — | `meta-llama/Meta-Llama-3.1-8B-Instruct` | Used as fallback when request has no `Model`. In endpoint mode it's sent informationally; the server uses what the endpoint is bound to |
+| `DefaultEmbeddingModel` | — | `sentence-transformers/all-MiniLM-L6-v2` | Same caveat |
+| `DefaultMaxTokens` | — | `1024` | Floor for chat completions |
+| `TimeoutSeconds` | — | `120` | Per-request HTTP timeout |
+| `RetryAttempts` | — | `3` | Applied by `Microsoft.Extensions.Http.Resilience` |
+| `EnableLogging` | — | `false` | Logs request/response bodies at `Debug` |
+
+Bind from configuration with `services.AddCompendiumHuggingFace(configuration)` (binds section `HuggingFace`).
+
+## Model recommendations
+
+For **dedicated Inference Endpoints**, the deploy-time model choice matters more than anything in this adapter. Good starting points:
+
+- **Llama-3.1-8B-Instruct** — broad chat, tool-calling support via TGI.
+- **Qwen-2.5-7B-Instruct** — strong English + Chinese, fast on a single L4.
+- **Mistral-7B-Instruct-v0.3** — small footprint, lower cost-to-serve.
+- **DeepSeek-V3 / R1** — when you need reasoning depth and can afford the compute.
+
+For **embeddings**, `BAAI/bge-large-en-v1.5` (general English) and `sentence-transformers/all-MiniLM-L6-v2` (fast, small) cover most needs.
+
+## Tool / function calling — caveat
+
+Tool calling is **best-effort**. The OpenAI-compatible `tools` + `tool_choice` body fields are passed through unchanged, and modern TGI-backed endpoints (Llama-3.1+, Qwen-2.5+, Mistral instruct families) generally honor them. **Non-TGI endpoints** (vision, audio, classification, older runtimes) silently ignore the fields and return a plain assistant message. There is no advance signal of capability — defensive consumers should check `response.GetToolCalls().Count > 0` rather than assume.
+
+## Production checklist
+
+- **Pin to a dedicated Inference Endpoint** (not serverless) for any user-facing workload.
+- **Enable autoscale-to-zero** if traffic is bursty — cuts idle bill to near-zero in exchange for a one-time 30-second warm-up on the first request after idle.
+- **Pick the EU region** (`region: eu-west-1` at deploy time) if you're subject to GDPR data-residency requirements.
+- **Set a Pro account budget alert** — serverless can burst into the paid tier silently.
+- **Cache the typed `HttpClient`** via DI (`AddCompendiumHuggingFace` does this automatically).
+- **Test the fallback path** — your code should still function (degraded) if the endpoint is autoscaled-to-zero during cold start (HF returns HTTP 503 with `{"error":"model is currently loading"}`).
+- **Watch for HTTP 429** on serverless and back off; `AIErrors.RateLimitExceeded` is surfaced as a typed `Result.Failure` for clean retry logic.
+- **Don't ship the HF token in source.** Use environment variables, secret managers, or Compendium's secret store.
+
+## Repository conventions
 
 | Aspect | Choice |
 |---|---|
-| Test framework | xUnit 2.9.3 |
-| Assertions | FluentAssertions 6.12.1 — never `Assert.*` |
-| Mocks | NSubstitute 5.1.0 — never Moq |
-| Coverage | coverlet.collector 6.0.2 + ReportGenerator (local tool) |
-| Result pattern | `Result<T>` from `Compendium.Abstractions` (NuGet) |
-| Async | `async Task` + cancellation tokens — never `Thread.Sleep`, never `.Result` |
-| Test naming | `{SUT}Tests` / `{Method}_{Scenario}_{Expected}` |
-| Test layout | AAA explicit (`// Arrange / // Act / // Assert`) |
-| File header | Sassy Solutions copyright block |
-| HTTP mocking (when applicable) | `RichardSzalay.MockHttp` 7.0.0 |
-| Container fixtures (integration) | `Testcontainers` 4.11.0 + `IAsyncLifetime` + `[RequiresDockerFact]` |
-| CI gate | ≥ 90 % line coverage on the unit-testable surface (DB-bound types may be exempted with documented reason) |
+| Target | .NET 9, C# 13 |
+| Test framework | xUnit 2.9.3 + FluentAssertions 6.12.1 + NSubstitute 5.1.0 |
+| Coverage | 98.4 % line / 94.3 % branch (102 tests) — gate at 90 % |
+| HTTP mocking | `RichardSzalay.MockHttp` 7.0.0 |
+| Result pattern | `Result<T>` from `Compendium.Core` |
+| Test naming | `{SUT}Tests` / `{Method}_{Scenario}_{Expected}` + AAA explicit |
 
-## How to scaffold a new adapter
+## Build & test locally
 
 ```bash
-# 1. Pick a vendor name (use PascalCase: Stripe, PostgreSQL, Redis…)
-export VENDOR=Stripe
-
-# 2. Copy the template to a new directory next to your Compendium clone
-cp -r templates/adapter-dotnet ../compendium-adapter-${VENDOR,,}
-cd ../compendium-adapter-${VENDOR,,}
-
-# 3. Find-and-replace placeholders (BSD sed on macOS — adapt for GNU sed)
-find . -type f \( -name '*.cs' -o -name '*.csproj' -o -name '*.sln' -o -name '*.md' -o -name '*.yml' -o -name '*.json' -o -name '*.props' \) -exec sed -i '' -e "s/Huggingface/${VENDOR}/g" -e "s/huggingface/${VENDOR,,}/g" {} +
-
-# 4. Rename folders/files
-git mv src/Compendium.Adapters.Huggingface              src/Compendium.Adapters.${VENDOR}
-git mv src/Compendium.Adapters.${VENDOR}/Compendium.Adapters.Huggingface.csproj \
-       src/Compendium.Adapters.${VENDOR}/Compendium.Adapters.${VENDOR}.csproj
-git mv src/Compendium.Adapters.${VENDOR}/HuggingfaceAdapter.cs                   \
-       src/Compendium.Adapters.${VENDOR}/${VENDOR}Adapter.cs
-git mv src/Compendium.Adapters.${VENDOR}/Options/HuggingfaceOptions.cs           \
-       src/Compendium.Adapters.${VENDOR}/Options/${VENDOR}Options.cs
-
-git mv tests/Unit/Compendium.Adapters.Huggingface.Tests           tests/Unit/Compendium.Adapters.${VENDOR}.Tests
-git mv tests/Unit/Compendium.Adapters.${VENDOR}.Tests/Compendium.Adapters.Huggingface.Tests.csproj \
-       tests/Unit/Compendium.Adapters.${VENDOR}.Tests/Compendium.Adapters.${VENDOR}.Tests.csproj
-git mv tests/Unit/Compendium.Adapters.${VENDOR}.Tests/Options/HuggingfaceOptionsTests.cs \
-       tests/Unit/Compendium.Adapters.${VENDOR}.Tests/Options/${VENDOR}OptionsTests.cs
-
-mv Compendium.Adapters.Huggingface.sln Compendium.Adapters.${VENDOR}.sln
-
-# 5. Initialise git and verify build
-git init
-git add .
+dotnet restore
 dotnet build -c Release
-dotnet test  -c Release
+dotnet test  -c Release --filter "FullyQualifiedName!~IntegrationTests"
 ```
 
-## What you still need to do per repo
+## Releasing
 
-After scaffolding :
+Tag with a `v` prefix on `main` to publish to nuget.org + GitHub Packages:
 
-- **Author the actual adapter code.** Replace `HuggingfaceAdapter` with the real implementation of whatever port (`IEventStore`, `IIdentityProvider`, `IBillingProvider`, `IEmailSender`, …) you're filling.
-- **NuGet publishing.** Add `NUGET_API_KEY` to repo secrets ; the included `release.yml` (TODO — add when first needed) packs and pushes on `v*` tags.
-- **Branch protection.** Require `build-test` (CI), at least one review, no force-push to `main`.
-- **Renovate or Dependabot.** Renovate config at `renovate.json` — track Compendium NuGets so a framework release auto-PRs the adapter. Dependabot for npm-style scheduled dep bumps.
-- **Integration tests** (optional but recommended for adapters with external systems). Add `tests/Integration/Compendium.Adapters.<Vendor>.IntegrationTests/` with `Testcontainers` if needed. Keep them out of the unit CI job.
-
-## Local-dev mode (when you're modifying both framework and adapter)
-
-Edit `Directory.Packages.props` to add a project reference instead of the NuGet :
-
-```xml
-<ItemGroup Condition="'$(LinkLocalCompendium)' == 'true'">
-  <PackageReference Remove="Compendium.Abstractions" />
-  <ProjectReference Include="../compendium/src/Abstractions/Compendium.Abstractions/Compendium.Abstractions.csproj" />
-</ItemGroup>
+```bash
+git tag v1.0.0-preview.0
+git push origin v1.0.0-preview.0
 ```
 
-Then `dotnet build -p:LinkLocalCompendium=true`.
-
-## Common pitfalls (read before pushing)
-
-- **Broken `Compendium.sln`** : every `Project("{...}")` MUST have a matching `EndProject` on the next non-empty line, and every GUID listed in `Project(...)` MUST appear in the `GlobalSection(ProjectConfigurationPlatforms)` (4 `.Debug|Any CPU.*` + `.Release|Any CPU.*` lines). Linux CI is strict ; macOS is lenient and will mask this bug. **Always** use `dotnet sln add` / `dotnet sln remove` instead of hand-editing the sln. Verify with `dotnet sln list && dotnet build -c Release` before pushing.
-- **`gh pr merge` from a detached worktree** : fails opaquely with "could not determine current branch". Always run merges from a checkout that's on a named branch (typically `main`).
-- **MinVer tag prefix** : pinned to `v` in `Directory.Build.props`. The first tag must continue the version sequence of the package's previous releases (e.g. if `Compendium.Adapters.Stripe` was last published as `1.0.0-preview.8` from the framework, the first tag here is `v1.0.0-preview.9`).
-- **No `--no-verify`, no `--force-push`** (use `--force-with-lease` instead). No version bumps in `Directory.Packages.props` outside of Renovate-managed PRs.
-- **Skill / commands** : `.claude/skills/compendium-test-author/SKILL.md` and `.claude/commands/{tests,coverage}.md` ship pre-baked. `/tests` and `/coverage` work out of the box in Claude Code.
+(Tagging is done by the orchestrator after merge; do not push tags from feature branches.)
 
 ## License
 
-MIT — same as Compendium itself.
+[MIT](LICENSE) — Copyright © 2026 Sassy Solutions.

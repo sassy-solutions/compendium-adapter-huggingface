@@ -5,6 +5,11 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
-global using FluentAssertions;
-global using NSubstitute;
-global using Xunit;
+global using Compendium.Core.Results;
+global using Compendium.Abstractions.AI;
+global using Compendium.Abstractions.AI.Models;
+global using System.Text.Json;
+global using System.Text.Json.Serialization;
+global using System.Runtime.CompilerServices;
+global using Microsoft.Extensions.Logging;
+global using Microsoft.Extensions.Options;

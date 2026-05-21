@@ -1,16 +1,23 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <AssemblyName>Compendium.Adapters.Huggingface.Tests</AssemblyName>
-    <RootNamespace>Compendium.Adapters.Huggingface.Tests</RootNamespace>
+    <AssemblyName>Compendium.Adapters.HuggingFace.Tests</AssemblyName>
+    <RootNamespace>Compendium.Adapters.HuggingFace.Tests</RootNamespace>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\..\src\Compendium.Adapters.Huggingface\Compendium.Adapters.Huggingface.csproj" />
+    <ProjectReference Include="..\..\..\src\Compendium.Adapters.HuggingFace\Compendium.Adapters.HuggingFace.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Compendium.Core" />
+    <PackageReference Include="Compendium.Abstractions.AI" />
   </ItemGroup>
 
   <ItemGroup>
@@ -22,6 +29,7 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
     <PackageReference Include="FluentAssertions" />
     <PackageReference Include="NSubstitute" />
+    <PackageReference Include="RichardSzalay.MockHttp" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
     <PackageReference Include="Microsoft.Extensions.Configuration" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Binder" />
